@@ -400,6 +400,9 @@ limit 100
 ;
 
 
+-- demonstrate join elimination without FK constraints
+SELECT 'left join no filter' as method , count(*) cnt FROM location 
+left join region_main  rm using(region_id);
 
 
 -- run a query demonstrating proper inner join behavior with join elimination
