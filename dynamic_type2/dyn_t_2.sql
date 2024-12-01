@@ -148,7 +148,7 @@ SELECT
     IFNULL(
         LAG(__t2diff_hash) OVER (PARTITION BY customer_id ORDER BY __ldts ASC),
         SHA1_BINARY('*null*')
-    ) AS __prev_t2diff_hash,      
+    ) AS __prev_t2diff_hash      
 FROM src_customer 
 WHERE TRUE 
 -- do not include records without changes
