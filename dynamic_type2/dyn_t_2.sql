@@ -110,7 +110,7 @@ ex. ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __rec_ve
 
 
 
-CREATE OR REPLACE DYNAMIC TABLE dyn_customer 
+CREATE OR REPLACE DYNAMIC TABLE dyn_customer_t2 
 TARGET_LAG = '10 MINUTE'
 WAREHOUSE = demo_wh
 AS
@@ -163,23 +163,25 @@ create dynamic type 2 table with type 1 columns
 
 */
 
-CREATE OR REPLACE DYNAMIC TABLE dyn_customer 
-TARGET_LAG = '1 MINUTE'
+CREATE OR REPLACE DYNAMIC TABLE dyn_customer_t2n1 
+TARGET_LAG = '10 MINUTE'
 WAREHOUSE = demo_wh
 AS
 SELECT *, 
---   __to_dts and __is_latest window functions now need to iterate over the final result set, not the initial select
+--   system column window functions now need to iterate over the final result set, not the initial select
   IFF(
       LEAD(__ldts) OVER (PARTITION BY customer_id ORDER BY __ldts ASC) IS NULL,  
       '9999-12-31'::TIMESTAMP_NTZ,
       DATEADD(NANOSECOND, -1, LEAD(__ldts) OVER (PARTITION BY customer_id ORDER BY __ldts ASC))
   ) AS __to_dts,
+  ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __rec_version,
+  FIRST_VALUE(__ldts) OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __create_dts,
+  LAST_VALUE(__ldts) OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __last_update_dts,
   IFF(__to_dts = '9999-12-31'::TIMESTAMP_NTZ, TRUE, FALSE) AS __is_latest
 FROM (
     SELECT
         customer_id || '|' || __ldts AS dim_skey,
-        customer_id AS customer_id,
-        __ldts AS __from_dts,
+        customer_id AS customer_id,        
         name AS name,
         -- TYPE 1 FIELDS
         LAST_VALUE(address) OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS address,
@@ -190,10 +192,7 @@ FROM (
         market_segment AS market_segment,
         comment AS comment,
         __ldts AS __ldts,
-        ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __rec_version,
-        FIRST_VALUE(__ldts) OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __create_dts,
-        src_customer.__ldts AS __update_dts,
-        LAST_VALUE(__ldts) OVER (PARTITION BY customer_id ORDER BY __ldts ASC) AS __last_update_dts,
+        __ldts AS __update_dts,
         SHA1_BINARY(
             NVL(UPPER(TRIM(name::VARCHAR)), '^^') || '|' ||
             NVL(UPPER(TRIM(account_balance_usd::VARCHAR)), '^^') || '|' ||
@@ -208,7 +207,8 @@ FROM (
             NVL(UPPER(TRIM(location_id::VARCHAR)), '^^') || '|' ||
             NVL(UPPER(TRIM(phone::VARCHAR)), '^^') || '|' ||
             NVL(UPPER(TRIM(address::VARCHAR)), '^^')
-        )::BINARY(20) AS __t1diff_hash
+        )::BINARY(20) AS __t1diff_hash,
+        __ldts AS __from_dts
     FROM src_customer 
     WHERE TRUE 
     QUALIFY __t2diff_hash != __prev_t2diff_hash
