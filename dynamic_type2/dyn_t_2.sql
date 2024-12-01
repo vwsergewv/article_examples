@@ -95,6 +95,34 @@ FROM source_system_customer SAMPLE (1000 ROWS)
 )
 ;
 
+
+--create the type 2 dimension as a standard table for performance testing
+CREATE OR REPLACE TABLE dim_customer
+(
+    CUSTOMER_ID number(38,0) NOT NULL, 
+    __FROM_DTS timestamp_ntz NOT NULL DEFAULT CURRENT_TIMESTAMP() COMMENT 'when record was loaded into the warehouse', 
+    __TO_DTS timestamp_ntz NOT NULL DEFAULT CURRENT_TIMESTAMP() COMMENT 'effective date or surrogate high date (9999-12-31)', 
+    NAME varchar(16777216) NOT NULL, 
+    ADDRESS varchar(16777216) NOT NULL, 
+    LOCATION_ID number(38,0) NOT NULL, 
+    PHONE varchar(15) NOT NULL, 
+    ACCOUNT_BALANCE_USD number(12,2) NOT NULL, 
+    MARKET_SEGMENT varchar(10) NOT NULL, 
+    COMMENT varchar(16777216), 
+    __LOAD_DTS timestamp_ltz(9), 
+    __REC_VERSION number(38,0) NOT NULL DEFAULT 1 COMMENT 'incremental change version counter for the record', 
+    __IS_LATEST boolean NOT NULL DEFAULT true COMMENT 'true only on the latest effective dated record', 
+    __CREATE_DTS timestamp_ntz NOT NULL DEFAULT CURRENT_TIMESTAMP() COMMENT 'date when record was first created', 
+    __UPDATE_DTS timestamp_ntz NOT NULL DEFAULT CURRENT_TIMESTAMP() COMMENT 'date when record was last updated', 
+    __T2DIFF_HASH binary(20) NOT NULL COMMENT 'hash of all columns used for quick compare', 
+    __T1DIFF_HASH binary(20) NOT NULL COMMENT 'hash of all columns used for quick compare'
+    , CONSTRAINT  PK_dim_CUSTOMER_1 PRIMARY KEY (CUSTOMER_ID, __FROM_DTS) RELY 
+    
+)
+;
+
+
+
 ---------------------------------------------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------------------------
 
@@ -213,4 +241,248 @@ FROM (
     WHERE TRUE 
     QUALIFY __t2diff_hash != __prev_t2diff_hash
 )
+;
+
+
+
+
+
+/*
+
+load the type 2 dimension as a standard table for performance testing
+
+*/
+
+MERGE INTO dim_customer AS TxObject
+USING (
+    WITH logic AS ( 
+        with CUSTOMER as (
+    SELECT
+        CUSTOMER_ID,
+        NAME,
+        ADDRESS,
+        LOCATION_ID,
+        PHONE,
+        ACCOUNT_BALANCE_USD,
+        MARKET_SEGMENT,
+        COMMENT,
+        __ldts as __LOAD_DTS
+    FROM SRC_CUSTOMER
+    WHERE TRUE 
+    AND __ldts  = (SELECT MAX(__ldts) FROM SRC_CUSTOMER)  
+
+)
+,
+common as (
+    SELECT
+        CUSTOMER.CUSTOMER_ID,
+        __LOAD_DTS  AS __FROM_DTS,
+        '9999-12-31'::TIMESTAMP_NTZ AS __TO_DTS,
+        CUSTOMER.NAME,
+        CUSTOMER.ADDRESS,
+        CUSTOMER.LOCATION_ID,
+        CUSTOMER.PHONE,
+        CUSTOMER.ACCOUNT_BALANCE_USD,
+        CUSTOMER.MARKET_SEGMENT,
+        CUSTOMER.COMMENT,
+        CUSTOMER.__LOAD_DTS,
+        1 AS __REC_VERSION,
+        true AS __IS_LATEST,
+        CURRENT_TIMESTAMP() AS __CREATE_DTS,
+        CURRENT_TIMESTAMP() AS __UPDATE_DTS,
+        SHA1_BINARY(
+            NVL(UPPER(TRIM(CUSTOMER_ID::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(NAME::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(ADDRESS::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(LOCATION_ID::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(PHONE::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(ACCOUNT_BALANCE_USD::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(MARKET_SEGMENT::VARCHAR)),'^^') || '|' || 
+            NVL(UPPER(TRIM(COMMENT::VARCHAR)),'^^') 
+                )::BINARY(20) AS __T2DIFF_HASH,
+        SHA1_BINARY('*null*')::BINARY(20) AS __T1DIFF_HASH
+    FROM CUSTOMER
+)
+
+SELECT * FROM common 
+    )
+
+    , new_recs AS (
+    SELECT logic.* 
+    , 'new recs' as __tmp_update_type      
+    FROM logic 
+    LEFT JOIN dim_customer  dim
+    ON 
+        logic.CUSTOMER_ID = dim.CUSTOMER_ID  
+    
+    WHERE
+    dim.CUSTOMER_ID IS NULL
+    )
+
+    , t2_insert AS (
+    SELECT
+        logic.CUSTOMER_ID, 
+        
+        logic.__FROM_DTS, 
+        
+        logic.__TO_DTS, 
+        
+        logic.NAME, 
+        
+        logic.ADDRESS, 
+        
+        logic.LOCATION_ID, 
+        
+        logic.PHONE, 
+        
+        logic.ACCOUNT_BALANCE_USD, 
+        
+        logic.MARKET_SEGMENT, 
+        
+        logic.COMMENT, 
+        
+        logic.__LOAD_DTS, 
+        
+        dim.__REC_VERSION  + 1 AS __REC_VERSION,
+        logic.__IS_LATEST, 
+        
+        dim.__CREATE_DTS,
+        logic.__UPDATE_DTS, 
+        
+        logic.__T2DIFF_HASH, 
+        
+        logic.__T1DIFF_HASH
+           
+    , 't2 insert' as __tmp_update_type       
+    FROM logic 
+    LEFT JOIN dim_customer dim 
+    ON 
+        logic.CUSTOMER_ID = dim.CUSTOMER_ID  
+    WHERE TRUE  
+    AND dim.__IS_LATEST = 'Y'
+    AND logic.__T2DIFF_HASH != dim.__T2DIFF_HASH
+    )
+
+    , t2_expire as (
+    SELECT
+        dim.CUSTOMER_ID, 
+        
+        dim.__FROM_DTS, 
+        
+        DATEADD(NANOSECOND,-1, logic.__FROM_DTS) AS __TO_DTS,
+        dim.NAME, 
+        
+        dim.ADDRESS, 
+        
+        dim.LOCATION_ID, 
+        
+        dim.PHONE, 
+        
+        dim.ACCOUNT_BALANCE_USD, 
+        
+        dim.MARKET_SEGMENT, 
+        
+        dim.COMMENT, 
+        
+        dim.__LOAD_DTS, 
+        
+        dim.__REC_VERSION, 
+        
+        FALSE AS __IS_LATEST,
+        dim.__CREATE_DTS, 
+        
+        dim.__UPDATE_DTS, 
+        
+        dim.__T2DIFF_HASH, 
+        
+        dim.__T1DIFF_HASH
+            
+    , 't2 expire' as __tmp_update_type      
+    FROM logic 
+    INNER JOIN dim_customer dim 
+    ON 
+        logic.CUSTOMER_ID = dim.CUSTOMER_ID  
+    WHERE TRUE  
+    AND dim.__IS_LATEST = 'Y'
+    AND logic.__T2DIFF_HASH != dim.__T2DIFF_HASH    
+
+    ) 
+
+ 
+
+    , allChanges as (
+        SELECT * FROM new_recs
+        UNION ALL
+        SELECT * FROM t2_insert 
+        UNION ALL
+        SELECT * FROM t2_expire    
+    )
+
+    SELECT * FROM allChanges
+
+
+) AS TxLogic 
+
+
+ON  
+        TxObject.CUSTOMER_ID = TxLogic.CUSTOMER_ID 
+    AND  TxObject.__REC_VERSION = TxLogic.__REC_VERSION
+
+WHEN MATCHED 
+THEN UPDATE
+    SET         
+        TxObject.CUSTOMER_ID = TxLogic.CUSTOMER_ID,         
+        TxObject.__FROM_DTS = TxLogic.__FROM_DTS,         
+        TxObject.__TO_DTS = TxLogic.__TO_DTS,         
+        TxObject.NAME = TxLogic.NAME,         
+        TxObject.ADDRESS = TxLogic.ADDRESS,         
+        TxObject.LOCATION_ID = TxLogic.LOCATION_ID,         
+        TxObject.PHONE = TxLogic.PHONE,         
+        TxObject.ACCOUNT_BALANCE_USD = TxLogic.ACCOUNT_BALANCE_USD,         
+        TxObject.MARKET_SEGMENT = TxLogic.MARKET_SEGMENT,         
+        TxObject.COMMENT = TxLogic.COMMENT,         
+        TxObject.__LOAD_DTS = TxLogic.__LOAD_DTS,         
+        TxObject.__REC_VERSION = TxLogic.__REC_VERSION,         
+        TxObject.__IS_LATEST = TxLogic.__IS_LATEST,         
+        TxObject.__CREATE_DTS = TxLogic.__CREATE_DTS,         
+        TxObject.__UPDATE_DTS = TxLogic.__UPDATE_DTS,         
+        TxObject.__T2DIFF_HASH = TxLogic.__T2DIFF_HASH,         
+        TxObject.__T1DIFF_HASH = TxLogic.__T1DIFF_HASH
+WHEN NOT MATCHED THEN
+    INSERT (
+        CUSTOMER_ID,
+        __FROM_DTS,
+        __TO_DTS,
+        NAME,
+        ADDRESS,
+        LOCATION_ID,
+        PHONE,
+        ACCOUNT_BALANCE_USD,
+        MARKET_SEGMENT,
+        COMMENT,
+        __LOAD_DTS,
+        __REC_VERSION,
+        __IS_LATEST,
+        __CREATE_DTS,
+        __UPDATE_DTS,
+        __T2DIFF_HASH,
+        __T1DIFF_HASH)
+    VALUES (
+        TxLogic.CUSTOMER_ID,
+        TxLogic.__FROM_DTS,
+        TxLogic.__TO_DTS,
+        TxLogic.NAME,
+        TxLogic.ADDRESS,
+        TxLogic.LOCATION_ID,
+        TxLogic.PHONE,
+        TxLogic.ACCOUNT_BALANCE_USD,
+        TxLogic.MARKET_SEGMENT,
+        TxLogic.COMMENT,
+        TxLogic.__LOAD_DTS,
+        TxLogic.__REC_VERSION,
+        TxLogic.__IS_LATEST,
+        TxLogic.__CREATE_DTS,
+        TxLogic.__UPDATE_DTS,
+        TxLogic.__T2DIFF_HASH,
+        TxLogic.__T1DIFF_HASH)
 ;
