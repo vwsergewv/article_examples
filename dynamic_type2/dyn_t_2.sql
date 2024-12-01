@@ -148,11 +148,11 @@ SELECT
     IFNULL(
         LAG(__t2diff_hash) OVER (PARTITION BY customer_id ORDER BY __ldts ASC),
         SHA1_BINARY('*null*')
-    ) AS prev_t2diff_hash,      
+    ) AS __prev_t2diff_hash,      
 FROM src_customer 
 WHERE TRUE 
 -- do not include records without changes
-QUALIFY __t2diff_hash != prev_t2diff_hash
+QUALIFY __t2diff_hash != __prev_t2diff_hash
 ;
 
 
@@ -203,7 +203,7 @@ FROM (
         IFNULL(
             LAG(__t2diff_hash) OVER (PARTITION BY customer_id ORDER BY __ldts ASC),
             SHA1_BINARY('*null*')
-        ) AS prev_t2diff_hash,      
+        ) AS __prev_t2diff_hash,      
         SHA1_BINARY(
             NVL(UPPER(TRIM(location_id::VARCHAR)), '^^') || '|' ||
             NVL(UPPER(TRIM(phone::VARCHAR)), '^^') || '|' ||
@@ -211,6 +211,6 @@ FROM (
         )::BINARY(20) AS __t1diff_hash
     FROM src_customer 
     WHERE TRUE 
-    QUALIFY __t2diff_hash != prev_t2diff_hash
+    QUALIFY __t2diff_hash != __prev_t2diff_hash
 )
 ;
